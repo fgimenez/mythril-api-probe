@@ -1,0 +1,138 @@
+deploy: &deploy
+    docker:
+      - image: mythril/api-k8s-ci:v0.1.2
+    steps:
+      - checkout
+      - run:
+          command: |
+            openssl aes-256-cbc -d -in /root/mythrilKey-cipher.asc -out /root/mythrilKey.asc -md sha256 -k $ENCRYPTION_KEY
+            openssl aes-256-cbc -d -in /root/mythrilSecretKey-cipher.asc -out /root/mythrilSecretKey.asc -md sha256 -k $ENCRYPTION_KEY
+            gpg --import /root/mythrilKey.asc
+            gpg --import /root/mythrilSecretKey.asc
+
+            mkdir ${HOME}/.kube
+            openssl aes-256-cbc -d -in ./config/kubeconfig-${PROVIDER}-cipher.yaml -out ${HOME}/.kube/config -md sha256 -k $ENCRYPTION_KEY
+
+            ./scripts/deploy-${ENVIRONMENT}.sh
+
+version: 2
+jobs:
+  unitTests:
+    docker:
+      - image: golang:1.11-alpine3.8
+    steps:
+      - checkout
+      - run:
+          command: |
+            apk --no-cache add git build-base
+            go vet ./...
+            go test ./...
+
+  publishImage:
+    docker:
+      - image: mythril/api-k8s-ci:v0.1.2
+    steps:
+      - checkout
+      - setup_remote_docker:
+          docker_layer_caching: true
+      - run:
+          command: ./scripts/build-image.sh
+
+  integrationTests:
+    docker:
+      - image: mythril/api-k8s-ci:v0.1.3
+    steps:
+      - checkout
+      - setup_remote_docker:
+          docker_layer_caching: true
+      - run:
+          description: run integration tests
+          environment:
+            K8S_VERSION: v1.10
+            SKIP_SNAPSHOT: y
+            DIND_PORT_FORWARDER_WAIT: 1
+            DIND_PORT_FORWARDER: "./scripts/portforward.sh"
+          command: |
+            ./scripts/portforward.sh start
+
+            wget https://cdn.rawgit.com/kubernetes-sigs/kubeadm-dind-cluster/master/fixed/dind-cluster-${K8S_VERSION}.sh
+            chmod +x dind-cluster-${K8S_VERSION}.sh
+            ./dind-cluster-${K8S_VERSION}.sh up
+            kubectl get nodes
+
+            ./scripts/integration-tests.sh
+
+  publishChart:
+    docker:
+      - image: mythril/api-k8s-ci:v0.1.2
+    steps:
+      - checkout
+      - run:
+          environment:
+            - GITHUB_PAGES_REPO: ConsenSys/mythril-api-charts
+            - HELM_VERSION: 2.11.0
+          command: |
+            # check chart version and tag match
+            if  [ "$(awk '/version:/ {print $2}' charts/mythril-api-probe/Chart.yaml)" != "${CIRCLE_TAG}" ]; then
+              echo "git tag and Chart version don't match, please update charts/mythril-api-probe/Chart.yaml"
+              exit 1
+            fi
+
+            sh scripts/publish-chart.sh
+
+  productionDeploy:
+    environment:
+      ENVIRONMENT: production
+      PROVIDER: aws
+    <<: *deploy
+
+  stagingDeploy:
+    environment:
+      ENVIRONMENT: staging
+      PROVIDER: azure
+    <<: *deploy
+
+workflows:
+  version: 2
+  test_and_deploy:
+    jobs:
+      - unitTests:
+          filters:
+            tags:
+              only: /.*/
+      - publishImage:
+          filters:
+            tags:
+              only: /.*/
+          requires:
+            - unitTests
+      - integrationTests:
+          filters:
+            tags:
+              only: /.*/
+          requires:
+            - unitTests
+      - stagingDeploy:
+          filters:
+            branches:
+              only: /^master$/
+          requires:
+            - integrationTests
+            - publishImage
+      - publishChart:
+          filters:
+            branches:
+              ignore: /.*/
+            tags:
+              only: /v[0-9]+(\.[0-9]+)*/
+          requires:
+            - unitTests
+            - integrationTests
+      - productionDeploy:
+          filters:
+            branches:
+              ignore: /.*/
+            tags:
+              only: /v[0-9]+(\.[0-9]+)*/
+          requires:
+            - publishChart
