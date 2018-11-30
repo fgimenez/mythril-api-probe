@@ -1,0 +1,13 @@
+kind: Service
+apiVersion: v1
+metadata:
+  name: mythril-api-probe
+  labels:
+    app: mythril-api-probe
+spec:
+  selector:
+    app: mythril-api-probe
+  ports:
+  - name: http
+    protocol: TCP
+    port: 8080

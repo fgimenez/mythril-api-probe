@@ -1,0 +1,14 @@
+{{ if eq .Values.environment "production" }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: mythril-api-probe
+  labels:
+    group: mythril-api
+spec:
+  selector:
+    matchLabels:
+      app: mythril-api-probe
+  endpoints:
+  - port: http
+{{ end }}

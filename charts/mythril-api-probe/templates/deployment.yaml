@@ -1,0 +1,39 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: mythril-api-probe
+  labels:
+    app: mythril-api-probe
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: maestro
+    spec:
+      containers:
+      - name: mythril-api-probe
+        image: {{ .Values.image.repo }}:{{ .Values.image.tag }}
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8080
+        command:
+        - /app/mythril-api-probe
+        - -mongodbURL
+        - {{ .Values.mongodb.url }}
+        - -mythrilAPIURL
+        - http://mythril-api.default.svc.cluster.local:3100
+        readinessProbe:
+          httpGet:
+            path: /metrics
+            port: 8080
+          initialDelaySeconds: 30
+          timeoutSeconds: 10
+        {{- if eq .Values.environment "production" }}
+        resources:
+          {{- .Values.resources | toYaml | trimSuffix "\n" | nindent 10 }}
+        {{ end }}
